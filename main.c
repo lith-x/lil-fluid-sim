@@ -7,6 +7,8 @@
 #define WIDTH 512
 #define PIXEL_COUNT HEIGHT *WIDTH
 #define MAX_FLOAT_VAL 5.0f
+#define DIFF_COEFF 36.009f
+
 // G short for "grid", gives you some (x,y) out of the 1d array "arr"
 #define G(arr, x, y) arr[(y) * WIDTH + (x)]
 
@@ -16,7 +18,8 @@ void add_vecs_dt(float *dst, float *src, float dt) {
 }
 
 // p short for "previous state", n short for "next state"
-void diffuse(float *p, float *n, float h_x, float h_y, float dt) {
+void diffuse(float *p, float *n, float h_x, float h_y, float diff_coeff,
+             float dt) {
     for (int y = 0; y < HEIGHT; y++) {
         for (int x = 0; x < WIDTH; x++) {
             float top = y == 0 ? 0 : G(p, x, y - 1);
@@ -27,12 +30,15 @@ void diffuse(float *p, float *n, float h_x, float h_y, float dt) {
             /* f(x,y)_(n+1) = f(x,y) + dt * (f(x+h_x,y) + f(x-h_x,y) - 2*f(x,y))
                / h_x^2 + dt * (f(x,y+h_y) + f(x,y-h_y) - 2*f(x,y)) / h_y^2 */
             G(n, x, y) =
-                center + dt * ((left + right - 2 * center) / (h_x * h_x) +
-                               (bottom + top - 2 * center) / (h_y * h_y));
+                center + diff_coeff * dt *
+                             ((left + right - 2 * center) / (h_x * h_x) +
+                              (bottom + top - 2 * center) / (h_y * h_y));
         }
     }
 }
 
+// this puts floats (computation) into bytes (displayed as greyscale), probably
+// want to go the other way around if user input for density ever comes along
 void floats_to_bytes(uint8_t *dst, float *src) {
     // assumed min = 0
     for (int i = 0; i < PIXEL_COUNT; i++) {
@@ -48,13 +54,27 @@ void draw_rect(float *arr, int x, int y, int width, int height) {
     }
 }
 
+void draw_circle(float *arr, int x, int y, int radius) {
+    for (int ly = y - radius; ly <= y + radius; ly++) {
+        for (int lx = x - radius; lx <= x + radius; lx++) {
+            // (x - a)^2 + (y - b)^2 <= radius^2  ==  circle @ (a,b) w/ raidus
+            int c_x = (lx - x) * (lx - x);
+            int c_y = (ly - y) * (ly - y);
+            if (c_x + c_y <= radius * radius)
+                G(arr, lx, ly) = MAX_FLOAT_VAL;
+        }
+    }
+}
+
 int main() {
     Arena arena = {0};
     float *dens1 = arena_alloc(&arena, PIXEL_COUNT * sizeof(float));
     float *dens2 = arena_alloc(&arena, PIXEL_COUNT * sizeof(float));
     uint8_t *displayed = arena_alloc(&arena, PIXEL_COUNT * sizeof(uint8_t));
 
-    draw_rect(dens1, (float)WIDTH / 2.0f - 20, (float)HEIGHT / 2.0f - 20, 40, 40);
+    // draw_rect(dens1, (float)WIDTH / 2.0f - 20, (float)HEIGHT / 2.0f - 20, 40,
+    //           40);
+    draw_circle(dens1, WIDTH / 2, HEIGHT / 2, 100);
     floats_to_bytes(displayed, dens1);
 
     Image image = {.width = WIDTH,
@@ -68,8 +88,11 @@ int main() {
     Texture2D tex = LoadTextureFromImage(image);
 
     void *temp;
+    int fps = GetMonitorRefreshRate(GetCurrentMonitor());
+    SetTargetFPS(fps);
+    float frame_time = 1 / (float)fps;
     while (!WindowShouldClose()) {
-        diffuse(dens1, dens2, 1, 1, GetFrameTime());
+        diffuse(dens1, dens2, 1, 1, DIFF_COEFF, frame_time);
         floats_to_bytes(displayed, dens2);
         UpdateTexture(tex, displayed);
         BeginDrawing();

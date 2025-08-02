@@ -46,7 +46,7 @@ void velocity_swirl_setup(velocity_t *arr, double force_scale) {
     }
 }
 
-void diffuse(uint8_t *prev, uint8_t *next, double dt) {
+void diffuse_unstable(uint8_t *prev, uint8_t *next, double dt) {
     for (int y = 0; y < HEIGHT; y++) {
         for (int x = 0; x < WIDTH; x++) {
             uint8_t left = x == 0 ? 0 : PIXEL(prev, x - 1, y);
@@ -104,7 +104,7 @@ int main() {
     void *temp;
     while (!WindowShouldClose()) {
         dt = GetFrameTime();
-        diffuse(prev_dens, next_dens, dt);
+        diffuse_unstable(prev_dens, next_dens, dt);
         advect(prev_dens, next_dens, forces, dt);
         UpdateTexture(texture, next_dens);
         // Draw

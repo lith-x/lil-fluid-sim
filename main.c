@@ -8,6 +8,7 @@
 #define PIXEL_COUNT HEIGHT *WIDTH
 #define MAX_FLOAT_VAL 5.0f
 #define DIFF_COEFF 36.009f
+#define GAUSS_ITERS 20
 
 // G short for "grid", gives you some (x,y) out of the 1d array "arr"
 #define G(arr, x, y) arr[(y) * WIDTH + (x)]
@@ -18,15 +19,21 @@ void add_vecs_dt(float *dst, float *src, float dt) {
 }
 
 // p short for "previous state", n short for "next state"
-void diffuse(float *p, float *n, float h_x, float h_y, float diff_coeff,
-             float dt) {
+// h_[x,y] is ratio: real measurement / pixel in [x,y] direction
+void diffuse_unstable(float *p, float *n, float h_x, float h_y,
+                      float diff_coeff, float dt) {
     for (int y = 0; y < HEIGHT; y++) {
         for (int x = 0; x < WIDTH; x++) {
-            float top = y == 0 ? 0 : G(p, x, y - 1);
-            float bottom = y == HEIGHT - 1 ? 0 : G(p, x, y + 1);
-            float left = x == 0 ? 0 : G(p, x - 1, y);
-            float right = x == WIDTH - 1 ? 0 : G(p, x + 1, y);
+            // prevent boundary crossing with cancelling via negative
+            float top = y == 0 ? -G(p, x, y - 1) : G(p, x, y - 1);
+            float bottom = y == HEIGHT - 1 ? -G(p, x, y + 1) : G(p, x, y + 1);
+            float left = x == 0 ? -G(p, x - 1, y) : G(p, x - 1, y);
+            float right = x == WIDTH - 1 ? -G(p, x + 1, y) : G(p, x + 1, y);
             float center = G(p, x, y);
+            // Fick's Second Law using Five-Point Stencil for Laplacian
+            // approximation:
+            // https://en.wikipedia.org/wiki/Fick%27s_laws_of_diffusion#Fick%27s_second_law
+            // https://en.wikipedia.org/wiki/Five-point_stencil#In_two_dimensions
             /* f(x,y)_(n+1) = f(x,y) + dt * (f(x+h_x,y) + f(x-h_x,y) - 2*f(x,y))
                / h_x^2 + dt * (f(x,y+h_y) + f(x,y-h_y) - 2*f(x,y)) / h_y^2 */
             G(n, x, y) =
@@ -36,6 +43,53 @@ void diffuse(float *p, float *n, float h_x, float h_y, float diff_coeff,
         }
     }
 }
+
+// p short for "previous state", n short for "next state"
+// h_[x,y] is ratio: (length of [x,y] cell)/([width,height]) <- scales
+void diffuse(float *p, float *n, float dt) {
+    // "cell" width / total width (cell width is 1px)
+    float diff_scale = DIFF_COEFF * dt;
+    float a_x = diff_scale / (float)(WIDTH * WIDTH);
+    float a_y = diff_scale / (float)(HEIGHT * HEIGHT);
+    float denom = 1.0f / (1.0f + 2.0f * (a_x + a_y));
+
+    for (int k = 0; k < GAUSS_ITERS; k++) {
+        for (int y = 0; y < HEIGHT; y++) {
+            for (int x = 0; x < WIDTH; x++) {
+                G(n, x, y) = denom * (G(p, x, y) +
+                                      a_x * (G(n, x + 1, y) + G(n, x - 1, y)) +
+                                      a_y * (G(n, x, y + 1) + G(n, x, y - 1)));
+            }
+        }
+    }
+}
+
+// void advect(float *u, float *v) {
+//     float dt0 = dt*N;
+
+//     // get previous timestamp as an approximation to current trajectory
+//     float x = i - dt0 * G(u, i, j);
+//     float y = j - dt0 * G(v, i, j);
+//     // clamp the values
+//     if (x < 0.5) x = 0.5;
+//     if (x > N + 0.5) x = N + 0.5;
+//     if (y < 0.5) y = 0.5;
+//     if (y > N + 0.5) y = N + 0.5;
+
+//     float i0 = (int)x;
+//     float i1 = i0 + 1;
+//     float j0 = (int)y;
+//     float j1 = j0 + 1;
+
+//     float s1 = x - i0;
+//     float s0 = 1 - s1;
+
+//     float t1 = y - j0;
+//     float t0 = 1 - t1;
+
+//     d[IX(i, j)] = s0 * (t0 * d0[IX(i0, j0)] + t1 * d 0 [IX(i0, j1)]) +
+//                   s1 * (t0 * d0[IX(i1, j0)] + t1 * d 0 [IX(i1, j1)]);
+// }
 
 // this puts floats (computation) into bytes (displayed as greyscale), probably
 // want to go the other way around if user input for density ever comes along
@@ -88,19 +142,20 @@ int main() {
     Texture2D tex = LoadTextureFromImage(image);
 
     void *temp;
-    int fps = GetMonitorRefreshRate(GetCurrentMonitor());
-    SetTargetFPS(fps);
-    float frame_time = 1 / (float)fps;
+    // int fps = GetMonitorRefreshRate(GetCurrentMonitor());
+    // SetTargetFPS(fps);
+    // float frame_time = 1 / (float)fps;
     while (!WindowShouldClose()) {
-        diffuse(dens1, dens2, 1, 1, DIFF_COEFF, frame_time);
+        diffuse(dens1, dens2, GetFrameTime());
+        temp = dens1;
+        dens1 = dens2;
+        dens2 = temp;
         floats_to_bytes(displayed, dens2);
         UpdateTexture(tex, displayed);
         BeginDrawing();
         DrawTexture(tex, 0, 0, WHITE);
         EndDrawing();
-        temp = dens1;
-        dens1 = dens2;
-        dens2 = temp;
+        printf("frame: %.02f\n", GetFrameTime());
     }
     CloseWindow();
     arena_free(&arena);
@@ -141,16 +196,16 @@ perhaps)
   - laplacian is like the second derivative for vectors, i.e. "acceleration"
   - c = 1 + 4a
   - iterate over next[i,j] = (prev[i,j] + a * (next[i,j+1] + next[i,j-1], +
-next[i+1,j] + next[i-1,j])) / c
+    next[i+1,j] + next[i-1,j])) / c
 
 (notes ended up being on diffusion, i started with reminding myself what the
 laplacian was)
 - laplacian = "curvature", "spread", the delta between the point i,j/x,y and the
-average of its neighbors
-  - more technically, it's the second derivative of the vector i.e. del^2*f =
-d^2*f / dx^2 + d^2*f / dy^2
+  average of its neighbors
+  - more technically, it's the second derivative of the vector i.e.
+    del^2*f = d^2*f / dx^2 + d^2*f / dy^2
   - laplacian is a continuous thing, so we need to make it discrete. enter:
-5-point stencil
+    5-point stencil
   - five point stencil
     - laplacian of f(x,y) is approx: [f(x+h,y) + f(x-h,y) + f(x,y+h) + f(x,y-h)
 - 4*f(x,y)] / h^2 (x[i+1,j] + x[i-1,j] + x[i,j+1] + x[i,j-1] - 4*x[i,j]) / h^2
@@ -159,7 +214,7 @@ d^2*f / dx^2 + d^2*f / dy^2
     - https://en.wikipedia.org/wiki/Five-point_stencil#In_two_dimensions
   - read x[i,j]_n as "value of field x at cell [i,j] at time step n"
   - diffusion equation = fick's second law:
-https://en.wikipedia.org/wiki/Fick%27s_laws_of_diffusion#Fick%27s_second_law
+    https://en.wikipedia.org/wiki/Fick%27s_laws_of_diffusion#Fick%27s_second_law
   - d[density of cell]/dt = density_coefficient * five_point_stencil
     - x[i,j]_(n+1) - x[i,j]_n = dt * density_coeff * five_point_stencil
   - long and short of it:
@@ -171,12 +226,55 @@ https://en.wikipedia.org/wiki/Fick%27s_laws_of_diffusion#Fick%27s_second_law
 
     - fick's second law: df(x,y)/dt = laplacian f(x,y)
       - df(x,y) = dt * ((f(x+h_x,y) + f(x-h_x,y) - 2*f(x,y)) / h_x^2 +
-(f(x,y+h_y) + f(x,y-h_y) - 2*f(x,y)) / h_y^2)
+                  (f(x,y+h_y) + f(x,y-h_y) - 2*f(x,y)) / h_y^2)
       - make continuous discrete: df(x,y) = f(x,y)_(n+1) - f(x,y)_n
       - swap that out, add f(x,y)_n to each side. assume everything on right
-side is at timestep n
-      - f(x,y)_(n+1) = f(x,y) + dt * (f(x+h_x,y) + f(x-h_x,y) - 2*f(x,y)) /
-h_x^2 + dt * (f(x,y+h_y) + f(x,y-h_y) - 2*f(x,y)) / h_y^2
+        side is at timestep n
+      - f(x,y)_(n+1) = f(x,y) + dt * d * (f(x+h_x,y) + f(x-h_x,y) - 2*f(x,y)) /
+                       h_x^2 + dt * d * (f(x,y+h_y) + f(x,y-h_y) - 2*f(x,y)) /
+                       h_y^2
+
+- stabilizing diffusion
+  - instead of using p to produce n(i,j) (unstable), let's try to make an
+    equation that could produce p(i,j) given n ("reversing time" so to speak)
+  - don't know *why* this is stable, will look into how this conforms to CFL
+    condition?
+  - use Gauss-Seidel method/approximation.
+    - in a system of equations, start with whatever (can be anything, but if you
+      got something closer i.e. a previous solution, it'll converge quicker)
+    - if only *other* variables in the system are used to determine the current
+      one, you can use the most recently calculated approximations for those
+      values to get an approximation of the value we want, and they all will
+      converge.
+    - there's "Jacobi method" as well, but that method specifically uses the
+      previous approximation, as opposed to Gauss-Seidel which uses whatever was
+      most recently calculated, which results in slower convergence i.e. needs
+      more iterations
+
+  - original: n(i,j) = p(i,j) + dt*diff_coeff*(p(i+1,j) + p(i-1,j) - 2*p(i,j)) /
+                       h_x^2 + dt*diff_coeff*(p(i,j+1) + p(i,j-1) - 2*p(i,j)) /
+                       h_y^2
+  - new: p(i,j) = n(i,j) - dt*diff_coeff*(n(i+1,j) + n(i-1,j) - 2*n(i,j)) /
+                  h_x^2 - dt*diff_coeff*(n(i,j+1) + n(i,j-1) - 2*n(i,j)) / h_y^2
+    - n(i,j) = p(i,j) + dt*diff_coeff*(n(i+1,j) + n(i-1,j) - 2*n(i,j)) /
+               h_x^2 + dt*diff_coeff*(n(i,j+1) + n(i,j-1) - 2*n(i,j)) / h_y^2
+  - iterating over this will approximate the correct solution very well (within
+    floating point error?), and is stable :D
+
+- advection
+  - Advection equation:
+    https://en.wikipedia.org/wiki/Advection#The_advection_equation
+  - f == density scalar field
+  - df/dt + velocity_field (dot) gradient(f) = 0
+    - df/dt = -velocity_field (dot) gradient(f)
+    - df = dt * -velocity_field (dot) gradient(f)
+
+
+- stability:
+  - need to be constantly enforcing 0 divergence over entire field (no "sources"
+    or "sinks" to liquid)
+  - The "CFL" condition:
+    https://en.wikipedia.org/wiki/Courant%E2%80%93Friedrichs%E2%80%93Lewy_condition
 
 
 - Units:

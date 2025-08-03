@@ -107,7 +107,7 @@ void floats_to_bytes(uint8_t *dst, float *src) {
     }
 }
 
-void draw_rect(float *arr, int x, int y, int width, int height) {
+void insert_rect(float *arr, int x, int y, int width, int height) {
     for (int ly = y; ly < y + height; ly++) {
         for (int lx = x; lx < x + width; lx++) {
             G(arr, lx, ly) = MAX_FLOAT_VAL;
@@ -135,7 +135,7 @@ int main() {
 
     // draw_rect(dens1, (float)WIDTH / 2.0f - 20, (float)HEIGHT / 2.0f - 20, 40,
     //           40);
-    draw_rect(dens1, WIDTH / 2 - 50, HEIGHT / 2 - 50, 100, 100);
+    insert_rect(dens1, WIDTH / 2 - 50, HEIGHT / 2 - 50, 100, 100);
     floats_to_bytes(displayed, dens1);
 
     Image image = {.width = WIDTH,

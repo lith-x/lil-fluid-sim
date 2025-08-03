@@ -4,10 +4,13 @@
 #define ARENA_IMPLEMENTATION
 #include "arena.h"
 
+// ---- definitions ----
+
 #define DISPLAY_WIDTH 512
 #define DISPLAY_HEIGHT 512
 #define MAX_FLOAT_VAL 20.0f
 #define DIFF_COEFF 20.0f
+#define VISC_COEFF 1.0f
 #define GAUSS_ITERS 5
 #define FORCE_SCALE 1.0f
 
@@ -22,8 +25,15 @@
         a = b;                                                                 \
         b = tmp;                                                               \
     } while (0);
+#define add_source(arr, source, dt)                                            \
+    do {                                                                       \
+        for (int i = 0; i < MEM_SIZE; i++)                                     \
+            arr[i] += dt * source[i];                                          \
+    } while (0);
 
-enum Dimension { DIM_X = 1, DIM_Y, DIM_ALL };
+enum Dimension { DIM_SCALAR = 0, DIM_X = 1, DIM_Y = 2 };
+
+// ---- util fns ----
 
 void insert_rect(float *arr, int x, int y, int width, int height) {
     for (int lx = x; lx < x + width; lx++) {
@@ -38,64 +48,13 @@ void float_to_byte(float *floats, uint8_t *bytes) {
         bytes[i] = (uint8_t)((floats[i] / MAX_FLOAT_VAL) * (float)UINT8_MAX);
 }
 
-void reset_boundary(float *arr, int dim) {
-    // Set boundary negative so it "cancels out" on edges, i think?
-
-    for (int x = 0; x < DISPLAY_WIDTH; x++) {
-        G(arr, x, -1) = dim == DIM_X ? -G(arr, x, 0) : G(arr, x, 0);
-        G(arr, x, DISPLAY_HEIGHT + 1) = DIM_X ? -G(arr, x, DISPLAY_HEIGHT) : G(arr, x, DISPLAY_HEIGHT);
-    }
-    for (int y = 0; y < DISPLAY_HEIGHT; y++) {
-        G(arr, -1, y) = dim == DIM_Y ? -G(arr, 0, y) : G(arr, 0, y);
-        G(arr, DISPLAY_WIDTH + 1, y) = dim == DIM_Y ? -G(arr, DISPLAY_WIDTH, y) : G(arr, DISPLAY_WIDTH, y);
-    }
-    // Corners are a weird case, just set to 0
-    G(arr, DISPLAY_WIDTH + 1, DISPLAY_HEIGHT + 1) = 0;
-    G(arr, DISPLAY_WIDTH + 1, -1) = 0;
-    G(arr, -1, DISPLAY_HEIGHT + 1) = 0;
-    G(arr, -1, -1) = 0;
-}
-
-void diffuse(float *p, float *n, float dt) {
-    float diff_scale = DIFF_COEFF * dt;
-    float a_x = diff_scale * (float)(DISPLAY_WIDTH * DISPLAY_WIDTH);
-    float a_y = diff_scale * (float)(DISPLAY_HEIGHT * DISPLAY_HEIGHT);
-    float denom = 1.0f / (1.0f + 2.0f * (a_x + a_y));
-
-    for (int k = 0; k < GAUSS_ITERS; k++) {
-        for (int y = 0; y < DISPLAY_HEIGHT; y++) {
-            for (int x = 0; x < DISPLAY_WIDTH; x++) {
-                G(n, x, y) = denom * (G(p, x, y) +
-                                      a_x * (G(n, x + 1, y) + G(n, x - 1, y)) +
-                                      a_y * (G(n, x, y + 1) + G(n, x, y - 1)));
-            }
+void visualize_velocity(float *vel_x, float *vel_y) {
+    for (int y = 0; y < DISPLAY_HEIGHT; y += 30) {
+        for (int x = 0; x < DISPLAY_WIDTH; x += 30) {
+            DrawCircle(x, y, 2, BLUE);
+            DrawLine(x, y, x + G(vel_x, x, y), y + G(vel_y, x, y), BLUE);
         }
     }
-    reset_boundary(n, 0);
-}
-
-void advect(float *p, float *n, float *vel_x, float *vel_y, float dt) {
-    float dtx = dt; // * DISPLAY_WIDTH;
-    float dty = dt; // * DISPLAY_HEIGHT;
-    for (int y = 0; y < DISPLAY_HEIGHT; y++) {
-        for (int x = 0; x < DISPLAY_WIDTH; x++) {
-            float traced_x = fminf(DISPLAY_WIDTH + 0.5f,
-                                   fmaxf(0.5f, x - dtx * G(vel_x, x, y)));
-            float traced_y = fminf(DISPLAY_HEIGHT + 0.5f,
-                                   fmaxf(0.5f, y - dty * G(vel_y, x, y)));
-            int x0 = (int)traced_x;
-            int x1 = x0 + 1;
-            int y0 = (int)traced_y;
-            int y1 = y0 + 1;
-            float s1 = traced_x - x0;
-            float s0 = 1.0f - s1;
-            float t1 = traced_y - y0;
-            float t0 = 1.0f - t1;
-            G(n, x, y) = s0 * (t0 * G(p, x0, y0) + t1 * G(p, x0, y1)) +
-                         s1 * (t0 * G(p, x1, y0) + t1 * G(p, x1, y1));
-        }
-    }
-    reset_boundary(n, 0);
 }
 
 // makes a spiral centered on the center of display
@@ -118,31 +77,164 @@ void setup_velocity(float *vel_x, float *vel_y) {
             float vy_rad = dy;
 
             // Combine
-            G(vel_x, x, y) = FORCE_SCALE * (tan_scale * vx_tan + rad_scale * vx_rad);
-            G(vel_y, x, y) = FORCE_SCALE * (tan_scale * vy_tan + rad_scale * vy_rad);
+            G(vel_x, x, y) =
+                FORCE_SCALE * (tan_scale * vx_tan + rad_scale * vx_rad);
+            G(vel_y, x, y) =
+                FORCE_SCALE * (tan_scale * vy_tan + rad_scale * vy_rad);
         }
     }
 }
 
-void visualize_velocity(float *vel_x, float *vel_y) {
-    for (int y = 0; y < DISPLAY_HEIGHT; y += 30) {
-        for (int x = 0; x < DISPLAY_WIDTH; x += 30) {
-            DrawCircle(x, y, 2, BLUE);
-            DrawLine(x, y, x + G(vel_x, x, y), y + G(vel_y, x, y), BLUE);
+// ---- sim fns ----
+
+// there might be something wrong here, left/top boundary replicates/produces
+// neighbor, right/bottom holds sources beyond what they're supposed to. could
+// also be a symptom of the current static velocity field that may get sorted
+// out once it becomes dynamic (field has overall negative divergence)
+void reset_boundary(float *arr, int dim) {
+    // Set boundary negative so it "cancels out" on edges, i think?
+    if (dim == DIM_X) {
+        for (int y = 0; y < DISPLAY_HEIGHT; y++) {
+            G(arr, -1, y) = -G(arr, 0, y);
+            G(arr, DISPLAY_WIDTH + 1, y) = -G(arr, DISPLAY_WIDTH, y);
+        }
+    } else {
+        for (int y = 0; y < DISPLAY_HEIGHT; y++) {
+            G(arr, 0, y) = G(arr, 1, y);
+            G(arr, DISPLAY_WIDTH + 1, y) = G(arr, DISPLAY_WIDTH, y);
         }
     }
+
+    if (dim == DIM_Y) {
+        for (int y = 0; y < DISPLAY_HEIGHT; y++) {
+            G(arr, -1, y) = -G(arr, 0, y);
+            G(arr, DISPLAY_WIDTH + 1, y) = -G(arr, DISPLAY_WIDTH, y);
+        }
+    } else {
+        for (int y = 0; y < DISPLAY_HEIGHT; y++) {
+            G(arr, 0, y) = G(arr, 1, y);
+            G(arr, DISPLAY_WIDTH + 1, y) = G(arr, DISPLAY_WIDTH, y);
+        }
+    }
+
+    for (int x = 0; x < DISPLAY_WIDTH; x++) {
+        if (dim == DIM_Y) {
+            G(arr, x, -1) = -G(arr, x, 0);
+            G(arr, x, DISPLAY_HEIGHT + 1) = -G(arr, x, DISPLAY_HEIGHT);
+        } else {
+            G(arr, x, -1) = G(arr, x, 0);
+            G(arr, x, DISPLAY_HEIGHT + 1) = G(arr, x, DISPLAY_HEIGHT);
+        }
+    }
+
+    G(arr, -1, -1) = 0.5f * (G(arr, -1, 0) + G(arr, 0, -1));
+    G(arr, -1, DISPLAY_HEIGHT + 1) =
+        0.5f * (G(arr, 0, DISPLAY_HEIGHT + 1) + G(arr, -1, DISPLAY_HEIGHT));
+    G(arr, DISPLAY_WIDTH + 1, -1) =
+        0.5f * (G(arr, DISPLAY_WIDTH + 1, 0) + G(arr, DISPLAY_WIDTH, -1));
+    G(arr, DISPLAY_WIDTH + 1, DISPLAY_HEIGHT + 1) =
+        0.5f * (G(arr, DISPLAY_WIDTH + 1, DISPLAY_HEIGHT) +
+                G(arr, DISPLAY_WIDTH, DISPLAY_HEIGHT + 1));
 }
+
+void diffuse(int dim, float *p, float *n, float coeff, float dt) {
+    float diff_scale = coeff * dt;
+    float a_x = diff_scale * (float)(DISPLAY_WIDTH * DISPLAY_WIDTH);
+    float a_y = diff_scale * (float)(DISPLAY_HEIGHT * DISPLAY_HEIGHT);
+    float denom = 1.0f / (1.0f + 2.0f * (a_x + a_y));
+
+    for (int k = 0; k < GAUSS_ITERS; k++) {
+        for (int y = 0; y < DISPLAY_HEIGHT; y++) {
+            for (int x = 0; x < DISPLAY_WIDTH; x++) {
+                G(n, x, y) = denom * (G(p, x, y) +
+                                      a_x * (G(n, x + 1, y) + G(n, x - 1, y)) +
+                                      a_y * (G(n, x, y + 1) + G(n, x, y - 1)));
+            }
+        }
+    }
+    reset_boundary(n, dim);
+}
+
+void advect(int dim, float *p, float *n, float *vel_x, float *vel_y, float dt) {
+    float dtx = dt; // * DISPLAY_WIDTH;
+    float dty = dt; // * DISPLAY_HEIGHT;
+    for (int y = 0; y < DISPLAY_HEIGHT; y++) {
+        for (int x = 0; x < DISPLAY_WIDTH; x++) {
+            float traced_x = fminf(DISPLAY_WIDTH + 0.5f,
+                                   fmaxf(0.5f, x - dtx * G(vel_x, x, y)));
+            float traced_y = fminf(DISPLAY_HEIGHT + 0.5f,
+                                   fmaxf(0.5f, y - dty * G(vel_y, x, y)));
+            int x0 = (int)traced_x;
+            int x1 = x0 + 1;
+            int y0 = (int)traced_y;
+            int y1 = y0 + 1;
+            float s1 = traced_x - x0;
+            float s0 = 1.0f - s1;
+            float t1 = traced_y - y0;
+            float t0 = 1.0f - t1;
+            G(n, x, y) = s0 * (t0 * G(p, x0, y0) + t1 * G(p, x0, y1)) +
+                         s1 * (t0 * G(p, x1, y0) + t1 * G(p, x1, y1));
+        }
+    }
+    reset_boundary(n, dim);
+}
+
+void project(float *vel_x, float *vel_y, float *poisson, float *divergence) {
+    float h_x = 1.0f / (float)DISPLAY_WIDTH;
+    float h_x2 = h_x * h_x;
+    float h_y = 1.0f / (float)DISPLAY_HEIGHT;
+    float h_y2 = h_y * h_y;
+
+    for (int y = 0; y < DISPLAY_HEIGHT; y++) {
+        for (int x = 0; x < DISPLAY_WIDTH; x++) {
+            G(divergence, x, y) =
+                -((G(vel_x, x + 1, y) - G(vel_x, x - 1, y)) / (2.0f * h_x) +
+                  (G(vel_y, x, y + 1) - G(vel_y, x, y - 1)) / (2.0f * h_y));
+            G(poisson, x, y) = 0.0f;
+        }
+    }
+    reset_boundary(divergence, DIM_SCALAR);
+    reset_boundary(poisson, DIM_SCALAR);
+
+    for (int k = 0; k < GAUSS_ITERS; k++) {
+        for (int y = 0; y < DISPLAY_HEIGHT; y++) {
+            for (int x = 0; x < DISPLAY_WIDTH; x++) {
+                G(poisson, x, y) =
+                    ((G(poisson, x - 1, y) + G(poisson, x + 1, y)) * h_y2 +
+                     (G(poisson, x, y - 1) + G(poisson, x, y + 1)) * h_x2 -
+                     G(divergence, x, y) * h_x2 * h_y2) /
+                    (2.0f * (h_x2 + h_y2));
+            }
+        }
+        reset_boundary(poisson, DIM_SCALAR);
+    }
+
+    for (int y = 0; y < DISPLAY_HEIGHT; y++) {
+        for (int x = 0; x < DISPLAY_WIDTH; x++) {
+            G(vel_x, x, y) -=
+                (G(poisson, x + 1, y) - G(poisson, x - 1, y)) / (2.0f * h_x);
+            G(vel_y, x, y) -=
+                (G(poisson, x, y + 1) - G(poisson, x, y - 1)) / (2.0f * h_y);
+        }
+    }
+    reset_boundary(vel_x, DIM_X);
+    reset_boundary(vel_y, DIM_Y);
+}
+
+// ---- main ----
 
 int main() {
     Arena arena = {0};
     uint8_t *displayed = arena_alloc(&arena, MEM_SIZE * sizeof(uint8_t));
 
-    float *dens1 = arena_alloc(&arena, MEM_SIZE * sizeof(float));
-    float *dens2 = arena_alloc(&arena, MEM_SIZE * sizeof(float));
+    float *dens = arena_alloc(&arena, MEM_SIZE * sizeof(float));
+    float *dens0 = arena_alloc(&arena, MEM_SIZE * sizeof(float));
 
     float *vel_x = arena_alloc(&arena, MEM_SIZE * sizeof(float));
+    float *vel_x0 = arena_alloc(&arena, MEM_SIZE * sizeof(float));
     float *vel_y = arena_alloc(&arena, MEM_SIZE * sizeof(float));
-    setup_velocity(vel_x, vel_y);
+    float *vel_y0 = arena_alloc(&arena, MEM_SIZE * sizeof(float));
+    // setup_velocity(vel_x, vel_y);
 
     // insert_rect(dens1, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
     // float_to_byte(dens1, displayed);
@@ -155,34 +247,55 @@ int main() {
 
     InitWindow(DISPLAY_WIDTH, DISPLAY_HEIGHT, "hi");
     Texture2D tex = LoadTextureFromImage(image);
-    float dt;
     SetTargetFPS(GetMonitorRefreshRate(GetCurrentMonitor()));
+
+    float dt;
+    int mouse_x, mouse_y;
+    char mouse_text[32];
     while (!WindowShouldClose()) {
         dt = GetFrameTime();
+        mouse_x = GetMouseX();
+        mouse_y = GetMouseY();
         // add sources
         if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
-            int mouse_x = GetMouseX();
-            int mouse_y = GetMouseY();
             for (int y = mouse_y - 5; y < mouse_y + 5; y++) {
                 for (int x = mouse_x - 5; x < mouse_x + 5; x++) {
-                    G(dens1, (int)fminf(DISPLAY_WIDTH, fmaxf(0, x)), (int)fminf(DISPLAY_HEIGHT, fmaxf(0,y))) = MAX_FLOAT_VAL;
+                    G(dens0, (int)fminf(DISPLAY_WIDTH, fmaxf(0, x)),
+                      (int)fminf(DISPLAY_HEIGHT, fmaxf(0, y))) = MAX_FLOAT_VAL / 2.0f;
                 }
             }
         }
 
-        // density step
-        diffuse(dens1, dens2, dt);
-        advect(dens1, dens2, vel_x, vel_y, dt);
-        swap_ptr(dens1, dens2);
-
         // velocity step
+        add_source(vel_x, vel_x0, dt);
+        add_source(vel_y, vel_y0, dt);
+        swap_ptr(vel_x, vel_x0);
+        diffuse(DIM_X, vel_x0, vel_x, VISC_COEFF, dt);
+        swap_ptr(vel_y, vel_y0);
+        diffuse(DIM_Y, vel_y0, vel_x, VISC_COEFF, dt);
+        project(vel_x, vel_y, vel_x0, vel_y0);
+        swap_ptr(vel_x, vel_x0);
+        swap_ptr(vel_y, vel_y0);
+        advect(DIM_X, vel_x, vel_x0, vel_x0, vel_y0, dt);
+        advect(DIM_Y, vel_y, vel_y0, vel_x0, vel_y0, dt);
+        project(vel_x, vel_y, vel_x0, vel_y0);
 
-        float_to_byte(dens2, displayed);
+        // density step
+        add_source(dens, dens0, dt);
+        swap_ptr(dens, dens0);
+        diffuse(DIM_SCALAR, dens, dens0, DIFF_COEFF, dt);
+        swap_ptr(dens, dens0);
+        advect(DIM_SCALAR, dens, dens0, vel_x, vel_y, dt);
+
+        float_to_byte(dens, displayed);
         UpdateTexture(tex, displayed);
+
+        snprintf(mouse_text, 32, "(%d, %d) : %.03f", mouse_x, mouse_y, G(dens, mouse_x, mouse_y));
 
         BeginDrawing();
         DrawTexture(tex, -1, -1, WHITE);
-        // visualize_velocity(vel_x, vel_y);
+        DrawRectangle(0, 0, DISPLAY_WIDTH / 2, 20, BLACK);
+        DrawText(mouse_text, 0, 0, 16, RED);
         EndDrawing();
     }
     CloseWindow();

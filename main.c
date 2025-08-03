@@ -8,7 +8,7 @@
 #define DISPLAY_HEIGHT 512
 #define MAX_FLOAT_VAL 20.0f
 #define DIFF_COEFF 20.0f
-#define GAUSS_ITERS 10
+#define GAUSS_ITERS 5
 #define FORCE_SCALE 1.0f
 
 #define SIM_WIDTH (DISPLAY_WIDTH + 2)
@@ -23,6 +23,8 @@
         b = tmp;                                                               \
     } while (0);
 
+enum Dimension { DIM_X = 1, DIM_Y, DIM_ALL };
+
 void insert_rect(float *arr, int x, int y, int width, int height) {
     for (int lx = x; lx < x + width; lx++) {
         for (int ly = y; ly < y + height; ly++) {
@@ -36,15 +38,16 @@ void float_to_byte(float *floats, uint8_t *bytes) {
         bytes[i] = (uint8_t)((floats[i] / MAX_FLOAT_VAL) * (float)UINT8_MAX);
 }
 
-void reset_boundary(float *arr) {
+void reset_boundary(float *arr, int dim) {
     // Set boundary negative so it "cancels out" on edges, i think?
+
     for (int x = 0; x < DISPLAY_WIDTH; x++) {
-        G(arr, x, -1) = -G(arr, x, -1);
-        G(arr, x, DISPLAY_HEIGHT + 1) = -G(arr, x, DISPLAY_HEIGHT + 1);
+        G(arr, x, -1) = dim == DIM_X ? -G(arr, x, 0) : G(arr, x, 0);
+        G(arr, x, DISPLAY_HEIGHT + 1) = DIM_X ? -G(arr, x, DISPLAY_HEIGHT) : G(arr, x, DISPLAY_HEIGHT);
     }
     for (int y = 0; y < DISPLAY_HEIGHT; y++) {
-        G(arr, -1, y) = -G(arr, -1, y);
-        G(arr, DISPLAY_WIDTH + 1, y) = -G(arr, DISPLAY_WIDTH + 1, y);
+        G(arr, -1, y) = dim == DIM_Y ? -G(arr, 0, y) : G(arr, 0, y);
+        G(arr, DISPLAY_WIDTH + 1, y) = dim == DIM_Y ? -G(arr, DISPLAY_WIDTH, y) : G(arr, DISPLAY_WIDTH, y);
     }
     // Corners are a weird case, just set to 0
     G(arr, DISPLAY_WIDTH + 1, DISPLAY_HEIGHT + 1) = 0;
@@ -68,7 +71,7 @@ void diffuse(float *p, float *n, float dt) {
             }
         }
     }
-    reset_boundary(n);
+    reset_boundary(n, 0);
 }
 
 void advect(float *p, float *n, float *vel_x, float *vel_y, float dt) {
@@ -92,21 +95,33 @@ void advect(float *p, float *n, float *vel_x, float *vel_y, float dt) {
                          s1 * (t0 * G(p, x1, y0) + t1 * G(p, x1, y1));
         }
     }
-    reset_boundary(n);
+    reset_boundary(n, 0);
 }
 
 // makes a spiral centered on the center of display
 void setup_velocity(float *vel_x, float *vel_y) {
+    float tan_scale = 1.0f;
+    float rad_scale = -0.1f;
+    float center_x = (float)DISPLAY_WIDTH / 2.0f;
+    float center_y = (float)DISPLAY_HEIGHT / 2.0f;
     for (int y = 0; y < DISPLAY_HEIGHT; y++) {
         for (int x = 0; x < DISPLAY_WIDTH; x++) {
-            G(vel_x, x, y) =
-                (float)(FORCE_SCALE * (-y + (float)DISPLAY_HEIGHT / 2.0f));
-            G(vel_y, x, y) =
-                (float)(FORCE_SCALE * (x - (float)DISPLAY_WIDTH / 2.0f));
+            float dx = x - center_x;
+            float dy = y - center_y;
+
+            // Tangential component (rotational)
+            float vx_tan = -dy;
+            float vy_tan = dx;
+
+            // Radial component (inward/outward)
+            float vx_rad = dx;
+            float vy_rad = dy;
+
+            // Combine
+            G(vel_x, x, y) = FORCE_SCALE * (tan_scale * vx_tan + rad_scale * vx_rad);
+            G(vel_y, x, y) = FORCE_SCALE * (tan_scale * vy_tan + rad_scale * vy_rad);
         }
     }
-    printf("vel_x center: %f\n",
-           G(vel_x, DISPLAY_WIDTH / 2, DISPLAY_HEIGHT / 2));
 }
 
 void visualize_velocity(float *vel_x, float *vel_y) {
@@ -129,8 +144,8 @@ int main() {
     float *vel_y = arena_alloc(&arena, MEM_SIZE * sizeof(float));
     setup_velocity(vel_x, vel_y);
 
-    insert_rect(dens1, 200, 200, 40, 40);
-    float_to_byte(dens1, displayed);
+    // insert_rect(dens1, 0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    // float_to_byte(dens1, displayed);
 
     Image image = {.data = displayed,
                    .format = PIXELFORMAT_UNCOMPRESSED_GRAYSCALE,
@@ -146,7 +161,13 @@ int main() {
         dt = GetFrameTime();
         // add sources
         if (IsMouseButtonDown(MOUSE_LEFT_BUTTON)) {
-            G(dens1, GetMouseX(), GetMouseY()) = MAX_FLOAT_VAL;
+            int mouse_x = GetMouseX();
+            int mouse_y = GetMouseY();
+            for (int y = mouse_y - 5; y < mouse_y + 5; y++) {
+                for (int x = mouse_x - 5; x < mouse_x + 5; x++) {
+                    G(dens1, (int)fminf(DISPLAY_WIDTH, fmaxf(0, x)), (int)fminf(DISPLAY_HEIGHT, fmaxf(0,y))) = MAX_FLOAT_VAL;
+                }
+            }
         }
 
         // density step
@@ -161,9 +182,8 @@ int main() {
 
         BeginDrawing();
         DrawTexture(tex, -1, -1, WHITE);
-        visualize_velocity(vel_x, vel_y);
+        // visualize_velocity(vel_x, vel_y);
         EndDrawing();
-        printf("%.02f\n", dt);
     }
     CloseWindow();
     arena_free(&arena);
